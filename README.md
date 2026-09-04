@@ -2,6 +2,8 @@
 
 Neovim integration for [Crush](https://github.com/anthropics/crush), the terminal-first AI assistant.
 
+![demo](demo.gif)
+
 ## Features
 
 - **Persistent floating terminal** with automatic session resume per directory
