@@ -12,6 +12,8 @@ local defaults = {
   },
   shell_direction = "float",
   unread_debounce = 2000,
+  bubble = true,             -- show a status bubble when the popup is hidden
+  bubble_timeout = 5000,     -- ms to keep the bubble after finishing (0 = keep until restored)
   keymaps = {
     toggle = "<leader>cc",
     shell = "<leader>ct",
@@ -26,6 +28,11 @@ local crush_visible = false
 local crush_term = nil
 local shell_term = nil
 local done_timer = nil
+local bubble_win = nil
+local bubble_buf = nil
+local bubble_timer = nil
+local bubble_ns = nil
+local bubble_rendered = nil
 
 local function build_cmd(config)
   local parts = { config.cmd }
@@ -51,6 +58,82 @@ local function build_cmd(config)
   return table.concat(parts, " ")
 end
 
+local function close_bubble()
+  if bubble_timer then bubble_timer:stop() end
+  if bubble_win and vim.api.nvim_win_is_valid(bubble_win) then
+    vim.api.nvim_win_close(bubble_win, true)
+  end
+  bubble_win = nil
+  bubble_rendered = nil
+end
+
+local function refresh_bubble()
+  local config = M.config
+  if config.bubble == false or crush_visible then return end
+  local state = vim.g.crush_status or ""
+  if state == "" then
+    close_bubble()
+    return
+  end
+
+  local logo = " ◆ crush"
+  local status = state == "working" and " ✻ working…" or " ✓ done"
+  local hint = " click or press m to restore"
+  local text = logo .. "  " .. status
+  local width = math.min(
+    math.max(vim.fn.strdisplaywidth(text), vim.fn.strdisplaywidth(hint)) + 2,
+    math.max(vim.o.columns - 4, 10)
+  )
+
+  if not (bubble_buf and vim.api.nvim_buf_is_valid(bubble_buf) and bubble_rendered == state) then
+    if bubble_buf and vim.api.nvim_buf_is_valid(bubble_buf) then
+      vim.api.nvim_buf_set_lines(bubble_buf, 0, -1, false, { text, hint })
+    else
+      bubble_buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[bubble_buf].bufhidden = "wipe"
+      vim.api.nvim_buf_set_lines(bubble_buf, 0, -1, false, { text, hint })
+      vim.keymap.set("n", "<LeftRelease>", function() M.restore() end,
+        { buffer = bubble_buf, nowait = true, silent = true })
+      vim.keymap.set("n", "<CR>", function() M.restore() end,
+        { buffer = bubble_buf, nowait = true, silent = true })
+      vim.keymap.set("n", "m", function() M.restore() end,
+        { buffer = bubble_buf, nowait = true, silent = true })
+    end
+
+    vim.api.nvim_buf_clear_namespace(bubble_buf, bubble_ns, 0, -1)
+    vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns, "CrushBubbleLogo", 0, 0, #logo)
+    vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns,
+      state == "working" and "CrushBubbleWorking" or "CrushBubbleDone",
+      0, #logo + 2, #logo + 2 + #status)
+    vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns, "CrushBubbleHint", 1, 0, -1)
+  end
+
+  local win_conf = {
+    relative = "editor",
+    row = vim.o.lines - 4,
+    col = vim.o.columns - width - 2,
+    width = width,
+    height = 2,
+  }
+
+  if bubble_win and vim.api.nvim_win_is_valid(bubble_win) then
+    vim.api.nvim_win_set_config(bubble_win, win_conf)
+  else
+    bubble_win = vim.api.nvim_open_win(bubble_buf, false, vim.tbl_extend("force", win_conf, {
+      border = "rounded",
+      style = "minimal",
+      zindex = 60,
+      focusable = true,
+    }))
+  end
+  bubble_rendered = state
+
+  if bubble_timer then bubble_timer:stop() end
+  if state == "done" and config.bubble_timeout and config.bubble_timeout > 0 then
+    bubble_timer:start(config.bubble_timeout, 0, vim.schedule_wrap(close_bubble))
+  end
+end
+
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", defaults, opts or {})
   local config = M.config
@@ -58,7 +141,14 @@ function M.setup(opts)
   local Terminal = require("toggleterm.terminal").Terminal
 
   vim.g.crush_unread = false
+  vim.g.crush_status = ""
   done_timer = vim.uv.new_timer()
+  bubble_timer = vim.uv.new_timer()
+  bubble_ns = vim.api.nvim_create_namespace("crush_bubble")
+  vim.api.nvim_set_hl(0, "CrushBubbleLogo", { default = true, link = "Special" })
+  vim.api.nvim_set_hl(0, "CrushBubbleWorking", { default = true, link = "DiagnosticInfo" })
+  vim.api.nvim_set_hl(0, "CrushBubbleDone", { default = true, link = "MoreMsg" })
+  vim.api.nvim_set_hl(0, "CrushBubbleHint", { default = true, link = "Comment" })
 
   require("toggleterm").setup({
     size = function(term)
@@ -92,22 +182,36 @@ function M.setup(opts)
     } or nil,
     on_open = function()
       crush_visible = true
+      close_bubble()
       vim.g.crush_unread = false
+      vim.g.crush_status = ""
       done_timer:stop()
+      if bubble_timer then bubble_timer:stop() end
       vim.schedule(function()
         vim.cmd("startinsert!")
       end)
     end,
     on_close = function()
       crush_visible = false
+      refresh_bubble()
     end,
     on_stdout = function()
       if not crush_visible then
+        vim.g.crush_status = "working"
         done_timer:stop()
         done_timer:start(config.unread_debounce, 0, vim.schedule_wrap(function()
           vim.g.crush_unread = true
+          vim.g.crush_status = "done"
+          refresh_bubble()
         end))
+        refresh_bubble()
       end
+    end,
+    on_exit = function()
+      crush_visible = false
+      close_bubble()
+      vim.g.crush_unread = false
+      vim.g.crush_status = ""
     end,
   })
 
@@ -143,7 +247,26 @@ function M.setup(opts)
 end
 
 function M.toggle()
-  if crush_term then
+  if not crush_term then return end
+  crush_term:toggle()
+  if crush_visible then
+    close_bubble()
+  else
+    refresh_bubble()
+  end
+end
+
+function M.minimize()
+  if crush_term and crush_visible then
+    M.toggle()
+  end
+end
+
+function M.restore()
+  if crush_term and not crush_visible then
+    close_bubble()
+    vim.g.crush_unread = false
+    vim.g.crush_status = ""
     crush_term:toggle()
   end
 end
@@ -239,5 +362,11 @@ end
 function M.is_unread()
   return vim.g.crush_unread or false
 end
+
+function M.is_bubble_visible()
+  return bubble_win ~= nil and vim.api.nvim_win_is_valid(bubble_win)
+end
+
+M._refresh_bubble = refresh_bubble
 
 return M
