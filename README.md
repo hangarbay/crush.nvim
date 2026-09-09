@@ -7,8 +7,9 @@ Neovim integration for [Crush](https://github.com/anthropics/crush), the termina
 ## Features
 
 - **Persistent floating terminal** with automatic session resume per directory
-- **Minimize to bubble** -- hiding the popup parks it in a small status bubble
-  ("working" / "done"); click it (or press `m`) to restore the session instantly
+- **Minimize to bubble** -- hiding the popup parks Crush in a status bubble
+  that stays put whether it is "working", "done", or idling; click it (or
+  press `m`) to restore the session instantly
 - **Unread indicator** (`vim.g.crush_unread`) for statusline integration -- fires after Crush finishes responding
 - **Visual selection pipe** -- send highlighted code to Crush with a prompt
 - **File pipe** -- send the current file to Crush with a prompt
@@ -49,8 +50,8 @@ require("crush").setup({
   },
   shell_direction = "float",  -- direction for the generic shell terminal
   unread_debounce = 2000,     -- ms of silence before marking as unread
-  bubble = true,              -- show a status bubble when the popup is hidden
-  bubble_timeout = 5000,      -- ms to keep the bubble after finishing (0 = keep until restored)     -- ms of silence before marking as unread
+  bubble = true,              -- keep a status bubble while Crush is parked (working / done / idle)
+  bubble_timeout = 5000,      -- ms before a "✓ done" bubble settles to the idle bubble (0 = keep it)
   keymaps = {
     toggle = "<leader>cc",    -- toggle crush terminal
     shell = "<leader>ct",     -- toggle plain shell
@@ -70,9 +71,10 @@ hides it into the bubble, and pressing it again restores the same session.
 Two variables drive statusline integration:
 
 - `vim.g.crush_unread` is `true` when Crush finishes responding while the
-  terminal is hidden.
+  terminal is hidden, and stays set until you restore the popup.
 - `vim.g.crush_status` is `"working"` while Crush is producing output hidden,
-  `"done"` once it finishes, and `""` otherwise.
+  `"done"` once it finishes, `"idle"` when the parked session is quiet, and
+  `""` when there is no parked session.
 
 ```lua
 -- lualine example

@@ -12,8 +12,8 @@ local defaults = {
   },
   shell_direction = "float",
   unread_debounce = 2000,
-  bubble = true,             -- show a status bubble when the popup is hidden
-  bubble_timeout = 5000,     -- ms to keep the bubble after finishing (0 = keep until restored)
+  bubble = true,             -- keep a status bubble while Crush is parked (working / done / idle)
+  bubble_timeout = 5000,     -- ms before a "✓ done" bubble settles to the idle bubble (0 = keep it)
   keymaps = {
     toggle = "<leader>cc",
     shell = "<leader>ct",
@@ -33,6 +33,7 @@ local bubble_buf = nil
 local bubble_timer = nil
 local bubble_ns = nil
 local bubble_rendered = nil
+local exiting = false
 
 local function build_cmd(config)
   local parts = { config.cmd }
@@ -77,9 +78,12 @@ local function refresh_bubble()
   end
 
   local logo = " ◆ crush"
-  local status = state == "working" and " ✻ working…" or " ✓ done"
+  local status = state == "working" and " ✻ working…"
+    or state == "done" and " ✓ done"
+    or ""
   local hint = " click or press m to restore"
-  local text = logo .. "  " .. status
+  local text = logo
+  if status ~= "" then text = text .. "  " .. status end
   local width = math.min(
     math.max(vim.fn.strdisplaywidth(text), vim.fn.strdisplaywidth(hint)) + 2,
     math.max(vim.o.columns - 4, 10)
@@ -102,9 +106,11 @@ local function refresh_bubble()
 
     vim.api.nvim_buf_clear_namespace(bubble_buf, bubble_ns, 0, -1)
     vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns, "CrushBubbleLogo", 0, 0, #logo)
-    vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns,
-      state == "working" and "CrushBubbleWorking" or "CrushBubbleDone",
-      0, #logo + 2, #logo + 2 + #status)
+    if status ~= "" then
+      vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns,
+        state == "working" and "CrushBubbleWorking" or "CrushBubbleDone",
+        0, #logo + 2, #logo + 2 + #status)
+    end
     vim.api.nvim_buf_add_highlight(bubble_buf, bubble_ns, "CrushBubbleHint", 1, 0, -1)
   end
 
@@ -130,7 +136,12 @@ local function refresh_bubble()
 
   if bubble_timer then bubble_timer:stop() end
   if state == "done" and config.bubble_timeout and config.bubble_timeout > 0 then
-    bubble_timer:start(config.bubble_timeout, 0, vim.schedule_wrap(close_bubble))
+    bubble_timer:start(config.bubble_timeout, 0, vim.schedule_wrap(function()
+      if vim.g.crush_status == "done" then
+        vim.g.crush_status = "idle"
+        refresh_bubble()
+      end
+    end))
   end
 end
 
@@ -193,7 +204,12 @@ function M.setup(opts)
     end,
     on_close = function()
       crush_visible = false
-      refresh_bubble()
+      if exiting then
+        exiting = false
+      else
+        if vim.g.crush_status == "" then vim.g.crush_status = "idle" end
+        refresh_bubble()
+      end
     end,
     on_stdout = function()
       if not crush_visible then
@@ -207,11 +223,29 @@ function M.setup(opts)
         refresh_bubble()
       end
     end,
-    on_exit = function()
+    on_exit = function(_, _, exit_code)
+      local was_visible = crush_visible
       crush_visible = false
-      close_bubble()
-      vim.g.crush_unread = false
-      vim.g.crush_status = ""
+      if done_timer then done_timer:stop() end
+      if bubble_timer then bubble_timer:stop() end
+      if was_visible then
+        -- Crush was quit from the open popup: dismiss it entirely.
+        exiting = true
+        close_bubble()
+        vim.g.crush_unread = false
+        vim.g.crush_status = ""
+      else
+        -- The session ended while parked: keep Crush minimized so it can be restored.
+        if vim.g.crush_status == "" or vim.g.crush_status == "working" then
+          if exit_code == 0 then
+            vim.g.crush_unread = true
+            vim.g.crush_status = "done"
+          else
+            vim.g.crush_status = "idle"
+          end
+        end
+        refresh_bubble()
+      end
     end,
   })
 
