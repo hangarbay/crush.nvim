@@ -145,6 +145,21 @@ local function refresh_bubble()
   end
 end
 
+local function refresh_bubble_for_current_tab()
+  local config = M.config
+  if config.bubble == false then return end
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  if bubble_win and vim.api.nvim_win_is_valid(bubble_win) then
+    if vim.api.nvim_win_get_tabpage(bubble_win) == current_tab then
+      return -- already showing in this tab
+    end
+    vim.api.nvim_win_close(bubble_win, true)
+    bubble_win = nil
+    bubble_rendered = nil
+  end
+  refresh_bubble()
+end
+
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", defaults, opts or {})
   local config = M.config
@@ -278,6 +293,24 @@ function M.setup(opts)
       M.run_file()
     end, { desc = "Crush: explain current file" })
   end
+
+  -- Floating windows live in one tabpage; keep the bubble visible in
+  -- whichever tab (or window) the user is currently in.
+  local bubble_group = vim.api.nvim_create_augroup("CrushBubble", { clear = true })
+  vim.api.nvim_create_autocmd({ "TabEnter", "WinEnter" }, {
+    group = bubble_group,
+    callback = refresh_bubble_for_current_tab,
+  })
+  vim.api.nvim_create_autocmd("TabClosed", {
+    group = bubble_group,
+    callback = function()
+      if bubble_win and not vim.api.nvim_win_is_valid(bubble_win) then
+        bubble_win = nil
+        bubble_rendered = nil
+      end
+      vim.schedule(refresh_bubble_for_current_tab)
+    end,
+  })
 end
 
 function M.toggle()
